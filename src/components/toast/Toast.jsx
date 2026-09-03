@@ -29,6 +29,22 @@ const ACTION_EVENT_NAME = 'linkloom::toast-action';
 const VIEW_ALL_EVENT_NAME = 'linkloom::toast-view-all';
 const MAX_VISIBLE_CARDS = 3;
 
+// ─── Positioning presets ────────────────────────────────────────────────────
+// Each preset defines the fixed anchor insets, cross-axis alignment, the slide
+// direction, and whether the newest toast renders nearest the anchored edge.
+// `bottom-right` preserves the historical placement (bottom: 80, right: 20).
+
+const POSITION_PRESETS = {
+  'top-left': { anchors: { top: 20, left: 20 }, align: 'flex-start', slideFrom: 'left', newestFirst: true },
+  'top-center': { anchors: { top: 20, left: '50%' }, translateX: '-50%', align: 'center', slideFrom: 'top', newestFirst: true },
+  'top-right': { anchors: { top: 20, right: 20 }, align: 'flex-end', slideFrom: 'right', newestFirst: true },
+  'bottom-left': { anchors: { bottom: 20, left: 20 }, align: 'flex-start', slideFrom: 'left', newestFirst: false },
+  'bottom-center': { anchors: { bottom: 20, left: '50%' }, translateX: '-50%', align: 'center', slideFrom: 'bottom', newestFirst: false },
+  'bottom-right': { anchors: { bottom: 80, right: 20 }, align: 'flex-end', slideFrom: 'right', newestFirst: false },
+};
+
+const DEFAULT_POSITION = 'bottom-right';
+
 // ─── Public API (same pattern as openSnackbar) ──────────────────────────────
 
 export const openToast = (options) => {
@@ -44,6 +60,10 @@ function injectKeyframes() {
   stylesInjected = true;
 
   const style = document.createElement('style');
+  // `ll-toast-slide-in/out` (slide from the right) are kept as the historical
+  // defaults so existing consumers that reference them keep working. The
+  // directional variants let the viewport animate from whichever edge it is
+  // anchored to when a non-right `position` is used.
   style.textContent = `
     @keyframes ll-toast-slide-in {
       from { transform: translateX(120%); opacity: 0; }
@@ -53,16 +73,27 @@ function injectKeyframes() {
       from { transform: translateX(0);    opacity: 1; }
       to   { transform: translateX(120%); opacity: 0; }
     }
+    @keyframes ll-toast-in-right { from { transform: translateX(120%);  opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+    @keyframes ll-toast-in-left  { from { transform: translateX(-120%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+    @keyframes ll-toast-in-top   { from { transform: translateY(-120%); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+    @keyframes ll-toast-in-bottom{ from { transform: translateY(120%);  opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+    @keyframes ll-toast-out-right { from { transform: translateX(0); opacity: 1; } to { transform: translateX(120%);  opacity: 0; } }
+    @keyframes ll-toast-out-left  { from { transform: translateX(0); opacity: 1; } to { transform: translateX(-120%); opacity: 0; } }
+    @keyframes ll-toast-out-top   { from { transform: translateY(0); opacity: 1; } to { transform: translateY(-120%); opacity: 0; } }
+    @keyframes ll-toast-out-bottom{ from { transform: translateY(0); opacity: 1; } to { transform: translateY(120%);  opacity: 0; } }
   `;
   document.head.appendChild(style);
 }
 
 // ─── Single Toast Card ──────────────────────────────────────────────────────
 
-function ToastCard({ toast, onDismiss }) {
+function ToastCard({ toast, onDismiss, slideFrom = 'right' }) {
   const [exiting, setExiting] = useState(false);
   const tokens = SEVERITY_TOKENS[toast.severity] || SEVERITY_TOKENS.info;
   const IconComponent = SEVERITY_ICONS[toast.severity] || SEVERITY_ICONS.info;
+  const animation = exiting
+    ? `ll-toast-out-${slideFrom} 0.28s ease forwards`
+    : `ll-toast-in-${slideFrom} 0.28s ease forwards`;
 
   const handleDismiss = useCallback(() => {
     setExiting(true);
@@ -97,9 +128,7 @@ function ToastCard({ toast, onDismiss }) {
         display: 'flex',
         flexDirection: 'column',
         gap: 8,
-        animation: exiting
-          ? 'll-toast-slide-out 0.28s ease forwards'
-          : 'll-toast-slide-in 0.28s ease forwards',
+        animation,
         pointerEvents: 'auto',
       }}
     >
@@ -216,9 +245,18 @@ function ToastCard({ toast, onDismiss }) {
 
 let _toastIdCounter = 0;
 
-export const Toast = ({ children, maxVisible = 4 }) => {
+export const Toast = ({
+  children,
+  maxVisible = 4,
+  position = DEFAULT_POSITION,
+  offset = {},
+  zIndex = 9999,
+  gap = 10,
+}) => {
   const [toasts, setToasts] = useState([]);
   const timerRefs = useRef({});
+
+  const preset = POSITION_PRESETS[position] || POSITION_PRESETS[DEFAULT_POSITION];
 
   useEffect(() => {
     injectKeyframes();
@@ -284,23 +322,32 @@ export const Toast = ({ children, maxVisible = 4 }) => {
           aria-label="Notifications"
           style={{
             position: 'fixed',
-            bottom: 80,
-            right: 20,
-            zIndex: 9999,
+            zIndex,
             display: 'flex',
             flexDirection: 'column',
-            gap: 10,
-            width: 300,
+            alignItems: preset.align,
+            gap,
             pointerEvents: 'none',
+            ...preset.anchors,
+            ...offset,
+            ...(preset.translateX ? { transform: `translateX(${preset.translateX})` } : {}),
           }}
         >
-          {toasts.slice(-MAX_VISIBLE_CARDS).map((toast) =>
+          {(preset.newestFirst
+            ? [...toasts.slice(-MAX_VISIBLE_CARDS)].reverse()
+            : toasts.slice(-MAX_VISIBLE_CARDS)
+          ).map((toast) =>
             toast.renderCard ? (
               <div key={toast.uid} style={{ pointerEvents: 'auto' }}>
                 {toast.renderCard(() => dismissToast(toast.uid))}
               </div>
             ) : (
-              <ToastCard key={toast.uid} toast={toast} onDismiss={dismissToast} />
+              <ToastCard
+                key={toast.uid}
+                toast={toast}
+                onDismiss={dismissToast}
+                slideFrom={preset.slideFrom}
+              />
             )
           )}
 
